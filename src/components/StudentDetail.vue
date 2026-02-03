@@ -103,7 +103,6 @@ const visible = ref(false);
 const totalChartRef = ref(null);
 const rankChartRef = ref(null);
 const subChartRef = ref(null);
-// 🟢 新增年级排名图表 Ref
 const gradeRankChartRef = ref(null);
 let gradeRankChartInstance = null;
 const selectedGradeRankSubject = ref('总分');
@@ -111,7 +110,6 @@ const selectedGradeRankSubject = ref('总分');
 // --- 计算属性 ---
 const examCount = computed(() => props.historyData.length);
 const scores = computed(() => props.historyData.map(h => h.data['总分']));
-// 这里依然保留班级排名作为“最新排名”的展示，或者根据需求改为年级排名
 const ranks = computed(() => props.historyData.map(h => h.data['班级排名'] || h.data['排名']));
 const avgTotal = computed(() => (_.mean(scores.value) || 0).toFixed(1));
 const maxTotal = computed(() => _.max(scores.value) || 0);
@@ -189,7 +187,10 @@ const initCharts = async () => {
 
   props.historyData.forEach(h => {
     Object.keys(h.data).forEach(k => {
-      if (!excludeKeys.includes(k) && !k.endsWith('_grade_rank')) allSubjects.add(k);
+      // 🟢 修复：显式排除 _rank 和 _grade_rank 后缀，防止排名数据被当成科目分数
+      if (!excludeKeys.includes(k) && !k.endsWith('_grade_rank') && !k.endsWith('_rank')) {
+        allSubjects.add(k);
+      }
     });
   });
   const subjectsArr = Array.from(allSubjects);
@@ -209,13 +210,12 @@ const initCharts = async () => {
     series: seriesList
   });
 
-  // 🟢 4. 初始化年级排名折线图
-  selectedGradeRankSubject.value = '总分'; // 默认选中总分
+  // 4. 初始化年级排名折线图
+  selectedGradeRankSubject.value = '总分';
   gradeRankChartInstance = echarts.init(gradeRankChartRef.value);
   updateGradeRankChart();
 };
 
-// 🟢 更新年级排名图表的逻辑
 const updateGradeRankChart = () => {
   if (!gradeRankChartInstance) return;
 
@@ -223,7 +223,6 @@ const updateGradeRankChart = () => {
   const subject = selectedGradeRankSubject.value;
   let ranksData = [];
 
-  // 根据选择获取对应的数据列
   if (subject === '总分') {
     ranksData = props.historyData.map(h => {
       const r = h.data['年级排名'];
@@ -237,17 +236,15 @@ const updateGradeRankChart = () => {
     });
   }
 
-  // 计算参考线数据 (Max, Min, Median)
   const validRanks = ranksData.filter(r => r !== null && !isNaN(r));
-  let maxVal = null;    // 数值最大 -> 排名最差 (高位值)
-  let minVal = null;    // 数值最小 -> 排名最好 (低位值)
+  let maxVal = null;
+  let minVal = null;
   let medianVal = null;
 
   if (validRanks.length > 0) {
     maxVal = _.max(validRanks);
     minVal = _.min(validRanks);
 
-    // 计算中位数
     const sorted = [...validRanks].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
     if (sorted.length % 2 === 0) {
@@ -257,7 +254,6 @@ const updateGradeRankChart = () => {
     }
   }
 
-  // ECharts 配置
   const option = {
     tooltip: { trigger: 'axis' },
     grid: { left: 50, right: 60, top: 40, bottom: 30 },
@@ -268,7 +264,7 @@ const updateGradeRankChart = () => {
     },
     yAxis: {
       type: 'value',
-      inverse: true, // 排名图通常翻转轴，使排名1在最上方
+      inverse: true,
       min: 1,
       minInterval: 1,
       name: '年级排名'
@@ -279,24 +275,23 @@ const updateGradeRankChart = () => {
         type: 'line',
         data: ranksData,
         symbolSize: 8,
-        lineStyle: { width: 3, color: '#626aef' }, // 强调主线
+        lineStyle: { width: 3, color: '#626aef' },
         itemStyle: { color: '#626aef' },
         label: { show: true, position: 'top' },
         markLine: {
           symbol: 'none',
           data: [
-            // 虚线定义：yAxis 对应 Y 轴数值
             { yAxis: minVal, name: '最好', label: { formatter: '低位值(最好): {c}' }, lineStyle: { color: '#67C23A', type: 'dashed' } },
             { yAxis: maxVal, name: '最差', label: { formatter: '高位值(最差): {c}' }, lineStyle: { color: '#F56C6C', type: 'dashed' } },
             { yAxis: medianVal, name: '中位数', label: { formatter: '中位数: {c}' }, lineStyle: { color: '#E6A23C', type: 'dashed', width: 2 } }
           ],
-          silent: true // 鼠标悬停不显示 MarkLine 的 tooltip
+          silent: true
         }
       }
     ]
   };
 
-  gradeRankChartInstance.setOption(option, true); // true:不仅合并，而是重置选项（清除旧数据）
+  gradeRankChartInstance.setOption(option, true);
 };
 
 const exportReport = () => {
@@ -308,7 +303,8 @@ const exportReport = () => {
   let allSubjects = new Set();
   props.historyData.forEach(h => {
     Object.keys(h.data).forEach(k => {
-      if (!['姓名','总分','排名','班级排名','学号', 'avg', 'rankDelta'].includes(k) && !k.endsWith('_grade_rank')) {
+      // 🟢 修复：导出时同样排除 _rank 后缀，避免将排名当做分数导出
+      if (!['姓名','总分','排名','班级排名','学号', 'avg', 'rankDelta'].includes(k) && !k.endsWith('_grade_rank') && !k.endsWith('_rank')) {
         allSubjects.add(k);
       }
     });
@@ -331,6 +327,11 @@ const exportReport = () => {
       const rankKey = `${sub}_grade_rank`;
       if (item.data[rankKey]) {
         row[`${sub}年排`] = item.data[rankKey];
+      }
+      // 🟢 新增：如果有科目排名（班级内单科排名），也导出
+      const subRankKey = `${sub}_rank`;
+      if (item.data[subRankKey]) {
+        row[`${sub}排名`] = item.data[subRankKey];
       }
     });
     return row;
