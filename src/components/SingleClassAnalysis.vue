@@ -177,16 +177,32 @@
               </el-table-column>
 
               <el-table-column
-                  v-if="hasSubjectRank(sub)"
+                  v-if="checkSubjectMeta(sub, 'hasRank')"
                   :prop="sub + '_rank'"
                   :label="'排名'"
                   align="center"
-                  width="80"
+                  width="70"
                   class-name="sub-rank-col"
               >
                 <template #default="scope">
                    <span class="rank-tag" v-if="scope.row[sub + '_rank']">
                      {{ scope.row[sub + '_rank'] }}
+                   </span>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+
+              <el-table-column
+                  v-if="checkSubjectMeta(sub, 'hasGradeRank')"
+                  :prop="sub + '_grade_rank'"
+                  :label="'年排'"
+                  align="center"
+                  width="70"
+                  class-name="sub-grade-rank-col"
+              >
+                <template #default="scope">
+                   <span class="grade-rank-tag" v-if="scope.row[sub + '_grade_rank']">
+                     {{ scope.row[sub + '_grade_rank'] }}
                    </span>
                   <span v-else>-</span>
                 </template>
@@ -202,7 +218,7 @@
                 prop="年级排名"
                 label="年排"
                 sortable="custom"
-                width="90"
+                width="80"
                 align="center"
                 fixed="right"
             >
@@ -211,7 +227,7 @@
               </template>
             </el-table-column>
 
-            <el-table-column prop="班级排名" label="班排" sortable="custom" width="110" align="center" fixed="right">
+            <el-table-column prop="班级排名" label="班排" sortable="custom" width="100" align="center" fixed="right">
               <template #default="scope">
                 {{ scope.row['班级排名'] }}
                 <span v-if="showRankChange && scope.row.rankDelta" :class="scope.row.rankDelta > 0 ? 'rank-up' : 'rank-down'">
@@ -287,7 +303,7 @@
     <el-dialog
         v-model="wizardVisible"
         title="🧙‍♂️ 数据导入向导 - 请确认列类型"
-        width="1000px"
+        width="1100px"
         align-center
         :close-on-click-modal="false"
     >
@@ -323,13 +339,13 @@
       </div>
 
       <el-table :data="wizardSubjects" border stripe size="small" height="350">
-        <el-table-column label="科目名称" width="120">
+        <el-table-column label="科目名称" width="100">
           <template #default="scope">
             <el-input v-model="scope.row.name" placeholder="例如: 语文" />
           </template>
         </el-table-column>
 
-        <el-table-column label="分数来源列" width="180">
+        <el-table-column label="分数来源列" width="160">
           <template #default="scope">
             <el-select v-model="scope.row.scoreCol" filterable>
               <el-option v-for="h in allHeaders" :key="h" :label="h" :value="h" />
@@ -337,7 +353,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="关联排名列 (科目排名)" width="180">
+        <el-table-column label="关联排名列" width="160">
           <template #default="scope">
             <el-select v-model="scope.row.rankCol" placeholder="无" clearable filterable>
               <el-option v-for="h in allHeaders" :key="h" :label="h" :value="h" />
@@ -345,16 +361,25 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="满分" width="100" align="center">
+        <el-table-column label="排名类型" width="130">
+          <template #default="scope">
+            <el-select v-model="scope.row.rankType" size="small" :disabled="!scope.row.rankCol">
+              <el-option label="班级排名" value="class" />
+              <el-option label="年级排名" value="grade" />
+            </el-select>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="满分" width="90" align="center">
           <template #default="scope">
             <el-input-number
                 v-model="scope.row.full" :min="10" :max="300" :step="10" size="small"
-                style="width: 80px"
+                style="width: 70px" :controls="false"
                 @change="handleWizardRuleChange(scope.row)"
             />
           </template>
         </el-table-column>
-        <el-table-column label="及格/优秀线" width="140" align="center">
+        <el-table-column label="及格/优秀" width="120" align="center">
           <template #default="scope">
             <div style="display: flex; gap: 5px; justify-content: center">
               <el-input-number v-model="scope.row.pass" :min="0" :max="scope.row.full" size="small" :controls="false" style="width: 50px" placeholder="及格"/>
@@ -410,6 +435,12 @@ const showRankChange = ref(true);
 const detailModal = ref(null);
 const detailName = ref('');
 const detailHistory = ref([]);
+
+// 排序状态
+const sortState = reactive({
+  prop: '',
+  order: ''
+});
 
 const simpleRuleDialogVisible = ref(false);
 const ruleList = ref([]);
@@ -474,6 +505,22 @@ const filteredStudents = computed(() => {
         String(s['姓名']).toLowerCase().includes(key) || String(s['学号']).includes(key)
     );
   }
+
+  if (sortState.prop && sortState.order) {
+    sourceData = _.orderBy(
+        sourceData,
+        [
+          (item) => {
+            const val = item[sortState.prop];
+            const num = Number(val);
+            if (!isNaN(num)) return num;
+            return -Infinity;
+          }
+        ],
+        [sortState.order === 'descending' ? 'desc' : 'asc']
+    );
+  }
+
   return sourceData;
 });
 
@@ -554,17 +601,30 @@ const subjectComparisonData = computed(() => {
   });
 });
 
-const hasSubjectRank = (subject) => {
-  const students = filteredStudents.value;
-  if (!students.length) return false;
-  return students[0][subject + '_rank'] !== undefined;
+// 🟢 核心修复：检查当前考试的 SubjectMeta 来决定列显示，而不是检查第一行数据
+const checkSubjectMeta = (subject, type) => {
+  // 如果选择了"全部考试"(-1)，因为无法确定上下文，暂时保守返回 false 或基于第一个有数据的考试
+  // 这里简化为：如果有 currentExam 且有 meta，就用 meta
+  // 如果是 -1，取最后一个有数据的考试
+  let exam = null;
+  if (filterExamId.value !== -1) {
+    exam = examList.find(e => e.id === filterExamId.value);
+  } else {
+    const validExams = examList.filter(e => e.hasData);
+    if (validExams.length > 0) exam = validExams[validExams.length - 1];
+  }
+
+  if (exam && exam.subjectMeta && exam.subjectMeta[subject]) {
+    return exam.subjectMeta[subject][type] === true;
+  }
+  return false;
 };
 
 // --- Actions ---
 
 const addExam = () => {
   if (!newExamName.value.trim()) return ElMessage.warning('请输入名称');
-  examList.push({ id: Date.now(), name: newExamName.value, hasData: false, data: [], subjects: [], rules: {} });
+  examList.push({ id: Date.now(), name: newExamName.value, hasData: false, data: [], subjects: [], rules: {}, subjectMeta: {} });
   newExamName.value = '';
   currentExamIndex.value = examList.length - 1;
 };
@@ -613,7 +673,6 @@ const handleUpload = async (file) => {
 const analyzeHeaders = (headers, data) => {
   let nameCol = headers.find(h => /姓名|name|student/i.test(h)) || '';
   let totalScoreCol = headers.find(h => /总分|total|score_sum|^成绩$/i.test(h)) || '';
-  // 🟢 智能优化：更严格的年级排名识别，优先匹配 "级名", "年级排名", "总排"
   let totalRankCol = headers.find(h => /^级名$|^年级排名$|^总排名$|^总排$/i.test(h)) || '';
 
   const subjects = [];
@@ -622,19 +681,22 @@ const analyzeHeaders = (headers, data) => {
   let unhandledCols = 0;
 
   headers.forEach((h) => {
-    // 跳过已经识别的全局列
     if (h === nameCol || h === '学号' || h === '班级' || h === '班名' || h === totalScoreCol || h === totalRankCol) return;
 
+    // 🟢 增强正则：把 "级名" 也视为排名列
     const isRankColumn = /排名|rank|级名|order/i.test(h);
 
     if (isRankColumn) {
-      // 如果紧跟在科目后面，大概率是科目排名
       if (currentSubject) {
         currentSubject.rankCol = h;
+        // 🟢 智能识别：如果是"级名"，默认为年级排名
+        if (h.includes('级名') || h.includes('年级') || h.includes('Grade')) {
+          currentSubject.rankType = 'grade';
+        } else {
+          currentSubject.rankType = 'class';
+        }
         hasComplexRank = true;
       } else {
-        // 孤立的排名列：如果没有识别出年级排名，这可能是年级排名（但也可能是干扰项）
-        // 这里我们保守一点，不自动赋值给 totalRankCol，而是算作“未处理列”，从而触发向导让用户自己选
         unhandledCols++;
       }
     } else {
@@ -645,6 +707,7 @@ const analyzeHeaders = (headers, data) => {
           name: h.replace(/成绩|分数|Score/ig, '').trim(),
           scoreCol: h,
           rankCol: '',
+          rankType: 'class',
           full: 100,
           pass: 60,
           excellent: 85
@@ -665,15 +728,12 @@ const analyzeHeaders = (headers, data) => {
     }
   });
 
-  // 设置到响应式对象，供向导使用
   globalMapping.value = { nameCol, totalScoreCol, totalRankCol };
   wizardSubjects.value = subjects;
 
-  // 触发条件：有复杂排名、有未识别列、或者连名字都没识别出来 -> 弹向导
   if (hasComplexRank || unhandledCols > 0 || !nameCol || !totalScoreCol) {
     wizardVisible.value = true;
   } else {
-    // 简单模式：结构非常标准
     ruleList.value = subjects.map(s => ({
       label: s.name,
       key: s.scoreCol,
@@ -699,7 +759,6 @@ const removeSubjectFromWizard = (index) => {
   wizardSubjects.value.splice(index, 1);
 };
 
-// 简单确认
 const confirmSimpleRules = () => {
   const raw = rawDataCache.value;
   const { nameCol, totalScoreCol, totalRankCol } = globalMapping.value;
@@ -714,10 +773,8 @@ const confirmSimpleRules = () => {
   simpleRuleDialogVisible.value = false;
 };
 
-// 🟢 核心：向导确认
 const confirmWizardImport = () => {
   const raw = rawDataCache.value;
-  // 🟢 从用户手动修改后的 globalMapping 中取值
   const { nameCol, totalScoreCol, totalRankCol } = globalMapping.value;
 
   if (!nameCol) return ElMessage.error('请选择姓名列！');
@@ -740,7 +797,10 @@ const confirmWizardImport = () => {
   wizardVisible.value = false;
 };
 
+// 🟢 核心：保存数据时，顺便生成 SubjectMeta 记录每一科的排名状态
 const processAndSaveData = (raw, activeSubjects, subjectConfigs, rulesMap, nameCol, totalScoreCol, totalRankCol) => {
+  const subjectMeta = {}; // { '语文': { hasRank: true, hasGradeRank: false } }
+
   const cleanedData = raw.map((row, index) => {
     const student = {
       '姓名': row[nameCol],
@@ -748,7 +808,6 @@ const processAndSaveData = (raw, activeSubjects, subjectConfigs, rulesMap, nameC
       '总分': totalScoreCol ? Number(row[totalScoreCol]) : 0
     };
 
-    // 🟢 只有当 totalRankCol 有值时，才导入年级排名
     if (totalRankCol && row[totalRankCol] !== undefined) {
       student['年级排名'] = row[totalRankCol];
     }
@@ -762,18 +821,25 @@ const processAndSaveData = (raw, activeSubjects, subjectConfigs, rulesMap, nameC
       student[subName] = score;
       calculatedTotal += score;
 
+      // 初始化 Meta
+      if (!subjectMeta[subName]) subjectMeta[subName] = { hasRank: false, hasGradeRank: false };
+
       if (config.rankCol) {
-        student[subName + '_rank'] = row[config.rankCol];
+        if (config.rankType === 'grade') {
+          student[subName + '_grade_rank'] = row[config.rankCol];
+          subjectMeta[subName].hasGradeRank = true; // 标记：该科目有年排
+        } else {
+          student[subName + '_rank'] = row[config.rankCol];
+          subjectMeta[subName].hasRank = true; // 标记：该科目有班排
+        }
       }
     });
 
-    // 如果没有选总分列，则自动累加
     if (!totalScoreCol) student['总分'] = calculatedTotal;
 
     return student;
   });
 
-  // 排序
   const sorted = _.orderBy(cleanedData, ['总分'], ['desc']);
 
   sorted.forEach((item, idx) => {
@@ -784,14 +850,18 @@ const processAndSaveData = (raw, activeSubjects, subjectConfigs, rulesMap, nameC
   exam.data = sorted;
   exam.subjects = activeSubjects;
   exam.rules = rulesMap;
+  exam.subjectMeta = subjectMeta; // 🟢 保存 Meta 信息
   exam.hasData = true;
-
-  // 🟢 记录标记：这次考试有没有年排
   exam.hasGradeRank = !!totalRankCol;
 
   filterExamId.value = exam.id;
 
   ElMessage.success(`导入成功：${sorted.length} 名学生，${activeSubjects.length} 个科目`);
+};
+
+const handleSort = ({ prop, order }) => {
+  sortState.prop = prop;
+  sortState.order = order;
 };
 
 const viewStudentDetail = (row) => {
@@ -818,7 +888,6 @@ const getScoreColor = (score, subject) => {
 };
 
 watch(filterExamId, (newVal) => { if (newVal === -1) {} });
-const handleSort = ({ prop, order }) => {};
 
 const exportReport = () => {
   if (filteredStudents.value.length === 0) {
@@ -827,13 +896,13 @@ const exportReport = () => {
   }
   const exportData = filteredStudents.value.map(stu => {
     const studentRow = { '姓名': stu['姓名'], '总分': stu['总分'], '班级排名': stu['班级排名'] };
-    // 导出时也根据标记决定是否导出年排
     if (hasGradeRank.value) {
       studentRow['年级排名'] = stu['年级排名'] || '-';
     }
     currentDisplaySubjects.value.forEach(sub => {
       studentRow[sub] = stu[sub];
       if(stu[sub + '_rank']) studentRow[sub + '排名'] = stu[sub + '_rank'];
+      if(stu[sub + '_grade_rank']) studentRow[sub + '年排'] = stu[sub + '_grade_rank'];
     });
     return studentRow;
   });
@@ -850,6 +919,7 @@ const exportReport = () => {
 </script>
 
 <style scoped>
+/* 保持原有样式 */
 .sca-container { padding: 20px; background: #f5f7fa; min-height: 100vh; }
 .exam-tabs { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
 .exam-tag { cursor: pointer; transition: all 0.3s; }
@@ -886,7 +956,6 @@ const exportReport = () => {
 .rank-down { color: #67C23A; font-size: 12px; margin-left: 3px; }
 .empty-state { padding: 40px; display: flex; justify-content: center; align-items: center; height: 400px; }
 
-/* 🟢 向导样式优化 */
 .global-mapping-box {
   background: #f0f9eb;
   padding: 15px;
@@ -895,15 +964,14 @@ const exportReport = () => {
   margin-bottom: 15px;
 }
 
-/* 排名列样式 */
-.sub-rank-col {
-  border-left: 1px dashed #ebeef5;
-}
+.sub-rank-col { border-left: 1px dashed #ebeef5; }
+.sub-grade-rank-col { border-left: 1px dotted #dcdfe6; background-color: #fafafa; }
 .rank-tag {
-  font-size: 12px;
-  color: #909399;
-  background-color: #f0f2f5;
-  padding: 2px 6px;
-  border-radius: 4px;
+  font-size: 12px; color: #909399;
+  background-color: #f0f2f5; padding: 2px 6px; border-radius: 4px;
+}
+.grade-rank-tag {
+  font-size: 12px; color: #626aef;
+  background-color: #f0f0ff; padding: 2px 6px; border-radius: 4px;
 }
 </style>
